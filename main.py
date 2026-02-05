@@ -6,7 +6,7 @@ from urllib.parse import quote
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# 1. 파이썬 3.13 호환성 대응 (Mock Class)
+# 1. 파이썬 3.13 호환성 유지 (Mock Class)
 try:
     import cgi
 except ImportError:
@@ -20,6 +20,9 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+# 가장 범용적이고 에러 없는 모델명으로 고정
+MODEL_NAME = "claude-3-haiku-20240307"
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 반갑습니다! 주인님의 명령을 최우선으로 수행하는 비서 '항아야'입니다. 무엇을 도와드릴까요?")
 
@@ -27,17 +30,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
 
     try:
-        # [핵심] 모델명을 가장 안정적인 버전으로 교체하여 404 에러 원천 차단
-        # 사용자의 의도가 '실시간 뉴스 검색 명령'인지 판단
-        decision_prompt = f"""
-        사용자의 메시지가 '실시간 뉴스 검색'을 명확히 요청하는 것인지 판단해줘.
-        - 뉴스 검색/조회 명령이면: SEARCH
-        - 그 외 모든 대화, 질문, 개인적 지시면: DIRECT
-        메시지: {user_text}
-        """
+        # [핵심] 사용자의 의도가 '실시간 뉴스 검색 명령'인지 판단
+        decision_prompt = f"사용자의 메시지가 '실시간 뉴스 검색'을 요청하는 것이면 SEARCH, 그 외 지시나 대화면 DIRECT라고 대답해. 메시지: {user_text}"
         
         check_res = client.messages.create(
-            model="claude-3-sonnet-20240229", # 가장 안정적인 모델로 변경
+            model=MODEL_NAME,
             max_tokens=10,
             messages=[{"role": "user", "content": decision_prompt}]
         )
@@ -45,7 +42,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         decision = check_res.content[0].text.strip().upper()
 
         if "SEARCH" in decision:
-            status_msg = await update.message.reply_text(f"🔍 지시하신 '{user_text}' 관련 뉴스를 분석 중입니다...")
+            status_msg = await update.message.reply_text(f"🔍 지시하신 '{user_text}' 정보를 분석 중입니다...")
             safe_query = quote(user_text)
             rss_url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
             feed = feedparser.parse(rss_url)
@@ -55,20 +52,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await status_msg.edit_text("😢 관련 뉴스를 찾지 못했습니다. 다른 명령을 주시겠어요?")
                 return
 
-            analysis_prompt = f"다음 뉴스들을 요약하고 투자 인사이트를 제공해줘:\n\n" + "\n".join(news_items)
+            analysis_prompt = f"다음 뉴스들을 요약하고 투자 인사이트를 보고해줘:\n\n" + "\n".join(news_items)
             response = client.messages.create(
-                model="claude-3-sonnet-20240229",
+                model=MODEL_NAME,
                 max_tokens=800,
                 messages=[{"role": "user", "content": analysis_prompt}]
             )
             await status_msg.edit_text(response.content[0].text)
         
         else:
-            # 뉴스 검색이 아닌 모든 사용자 지시 및 대화 처리
+            # 일상 대화 및 사용자 지시 처리
             response = client.messages.create(
-                model="claude-3-sonnet-20240229",
+                model=MODEL_NAME,
                 max_tokens=800,
-                messages=[{"role": "user", "content": f"당신은 70세 투자자의 충성스럽고 유능한 개인 비서 '항아야'입니다. 주인님의 말씀에 정중하고 똑똑하게 답하세요: {user_text}"}]
+                messages=[{"role": "user", "content": f"당신은 70세 투자자의 충성스러운 비서 '항아야'입니다. 주인님의 말씀에 정중하고 똑똑하게 답하세요: {user_text}"}]
             )
             await update.message.reply_text(response.content[0].text)
 
