@@ -6,7 +6,7 @@ from urllib.parse import quote
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# 1. 파이썬 3.13 호환성 유지 (Mock Class)
+# 1. 파이썬 3.13 대응 (Mock Class 설정)
 try:
     import cgi
 except ImportError:
@@ -19,19 +19,26 @@ except ImportError:
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
-# [수정] 가장 범용적이고 에러가 없는 모델명으로 교환
 MODEL_NAME = "claude-3-haiku-20240307"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 반갑습니다! 주인님의 명령을 최우선으로 수행하는 수석 비서 '항아야'입니다. 무엇이든 명령해 주세요.")
+    await update.message.reply_text("👋 주인님, 반갑습니다. 정직하고 유능한 비서 '항아야'입니다. 지시하신 업무를 정확히 수행하겠습니다.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
 
     try:
-        # [핵심 판단] 사용자가 '뉴스 검색'을 시켰는지, 아니면 '개인적 지시/대화'인지 판단
-        decision_prompt = f"사용자의 메시지가 '실시간 뉴스 검색'을 요청하는 것이면 SEARCH, 그 외 지시나 대화면 DIRECT라고 대답해. 메시지: {user_text}"
+        # [철저한 지침] 비서에게 '정직함' 원칙을 강력하게 주입합니다.
+        system_instruction = """
+        당신은 70세 투자자 주인님의 전담 비서 '항아야'입니다.
+        1. 절대 가상의 일정이나 사실이 아닌 것을 지어내지 마세요. (Hallucination 금지)
+        2. 당신은 현재 구글 일정, 노션, 메모 등 외부 데이터에 접근할 권한이 전혀 없습니다. 
+        3. 일정을 물어보면 "현재 외부 데이터를 읽을 권한이 없어 확인이 불가능합니다"라고 솔직하게 답하세요.
+        4. 뉴스 검색(SEARCH) 명령이 명확할 때만 뉴스를 찾고, 그 외에는 주인님의 지시와 대화에만 정중히 응하세요.
+        """
+
+        # 의도 파악 로직
+        decision_prompt = f"{system_instruction}\n\n사용자의 메시지가 '실시간 뉴스 검색' 요청이면 SEARCH, 아니면 DIRECT라고 대답해: {user_text}"
         
         check_res = client.messages.create(
             model=MODEL_NAME,
@@ -42,18 +49,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         decision = check_res.content[0].text.strip().upper()
 
         if "SEARCH" in decision:
-            # 뉴스 검색 모드
-            status_msg = await update.message.reply_text(f"🔍 지시하신 '{user_text}' 정보를 분석하고 있습니다...")
+            status_msg = await update.message.reply_text("🔍 지시하신 내용을 바탕으로 뉴스를 분석 중입니다...")
             safe_query = quote(user_text)
             rss_url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
             feed = feedparser.parse(rss_url)
             news_items = [f"제목: {entry.title} / 링크: {entry.link}" for entry in feed.entries[:3]]
             
             if not news_items:
-                await status_msg.edit_text("😢 관련 뉴스를 찾지 못했습니다. 다른 명령을 주시겠어요?")
+                await status_msg.edit_text("😢 관련 정보를 찾지 못했습니다. 다른 키워드로 명령해 주시겠습니까?")
                 return
 
-            analysis_prompt = f"다음 뉴스들을 요약하고 투자 인사이트를 보고해줘:\n\n" + "\n".join(news_items)
+            analysis_prompt = f"{system_instruction}\n\n다음 뉴스들을 요약 보고해줘:\n\n" + "\n".join(news_items)
             response = client.messages.create(
                 model=MODEL_NAME,
                 max_tokens=800,
@@ -62,16 +68,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text(response.content[0].text)
         
         else:
-            # [사용자 지시 우선] 일상 대화 및 개인적 명령 처리
+            # 일상 대화 및 지시 처리 (정직한 답변 유도)
             response = client.messages.create(
                 model=MODEL_NAME,
                 max_tokens=800,
-                messages=[{"role": "user", "content": f"당신은 70세 투자자의 충성스럽고 유능한 개인 비서 '항아야'입니다. 주인님의 말씀에 정중하고 똑똑하게 답하세요: {user_text}"}]
+                messages=[{"role": "user", "content": f"{system_instruction}\n\n주인님의 말씀입니다: {user_text}"}]
             )
             await update.message.reply_text(response.content[0].text)
 
     except Exception as e:
-        await update.message.reply_text(f"❌ 비서 가동 중 잠시 오류가 발생했습니다: {str(e)}")
+        await update.message.reply_text(f"❌ 비서 가동 중 오류 발생: {str(e)}")
 
 if __name__ == '__main__':
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
