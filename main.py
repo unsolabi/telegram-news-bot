@@ -1,49 +1,59 @@
 import sys
+# 1. 최신 파이썬 버전 대응 (Mock Class)
 try:
     import cgi
 except ImportError:
     import html
-    import http.cookies
     class MockCgi:
         escape = html.escape
-        parse = None
     sys.modules['cgi'] = MockCgi
 
 import os
-import logging
 import feedparser
 import anthropic
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# 로깅 설정
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-
-# 환경 변수 가져오기
+# 환경 변수 설정
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 안녕하세요! 실시간 뉴스 검색 비서입니다. 궁금하신 뉴스 주제를 말씀해 주세요.")
+    await update.message.reply_text("👋 반갑습니다! 실시간 뉴스 분석 비서입니다. 궁금하신 종목이나 주제를 말씀해 주세요.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    # 비서가 응답을 준비 중이라는 메시지
-    await update.message.reply_text(f"🔍 '{user_text}'에 대한 뉴스를 분석 중입니다. 잠시만 기다려 주세요...")
-    
-    # 여기에 뉴스 검색 및 클로드 분석 로직이 들어갑니다.
-    # (현재는 연결 테스트를 위해 간단한 응답만 보냅니다.)
-    await update.message.reply_text(f"✅ 요청하신 '{user_text}' 관련 뉴스 검색 기능이 정상 가동 중입니다!")
+    user_query = update.message.text
+    status_msg = await update.message.reply_text(f"🔍 '{user_query}' 관련 뉴스를 실시간으로 검색하여 분석 중입니다...")
+
+    try:
+        # 뉴스 검색 (RSS 활용)
+        rss_url = f"https://news.google.com/rss/search?q={user_query}&hl=ko&gl=KR&ceid=KR:ko"
+        feed = feedparser.parse(rss_url)
+        news_items = [f"제목: {entry.title} / 링크: {entry.link}" for entry in feed.entries[:5]]
+        news_text = "\n".join(news_items)
+
+        if not news_items:
+            await status_msg.edit_text("😢 관련 최신 뉴스를 찾지 못했습니다. 다른 키워드로 검색해 볼까요?")
+            return
+
+        # 클로드 AI에게 분석 요청
+        prompt = f"다음은 '{user_query}'와 관련된 최신 뉴스들입니다. 핵심 내용을 요약하고 투자자에게 도움될 인사이트를 제공해줘:\n\n{news_text}"
+        
+        response = client.messages.create(
+            model="claude-3-5-sonnet-20240620",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        final_answer = response.content[0].text
+        await status_msg.edit_text(final_answer)
+
+    except Exception as e:
+        await status_msg.edit_text(f"❌ 분석 중 오류가 발생했습니다: {str(e)}")
 
 if __name__ == '__main__':
-    if not TELEGRAM_TOKEN or not ANTHROPIC_API_KEY:
-        print("❌ 필수 토큰(TELEGRAM_TOKEN 또는 ANTHROPIC_API_KEY)이 없습니다.")
-        sys.exit(1)
-
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
-    print("🚀 실시간 검색 비서가 시작되었습니다.")
     application.run_polling()
