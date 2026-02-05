@@ -1,162 +1,75 @@
 import os
 import logging
 import feedparser
-import requests
-from bs4 import BeautifulSoup
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
 import anthropic
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# -------- 설정 --------
-logging.basicConfig(level=logging.INFO)
+# -------- 1. 설정 (Railway 환경변수 로드) --------
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Railway의 Variables 탭에 입력한 값을 가져옵니다.
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
+CLAUDE_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-# Claude 클라이언트 초기화
+# 토큰이 없을 경우 에러 방지
+if not TELEGRAM_TOKEN or not CLAUDE_API_KEY:
+    logging.error("❌ 필수 토큰(TELEGRAM_TOKEN 또는 ANTHROPIC_API_KEY)이 설정되지 않았습니다.")
+
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
-# -------- RSS 뉴스 소스 --------
-RSS_FEEDS = [
-    "https://www.mk.co.kr/rss/30100041/",   # 한국 경제
-    "https://rss.donga.com/total.xml",     # 한국 종합
-    "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",  # 미국 경제
-    "http://feeds.bbci.co.uk/news/world/rss.xml",     # 세계 뉴스
-]
-
-# -------- 기사 본문 일부 가져오기 --------
-def get_article_text(url):
-    try:
-        res = requests.get(url, timeout=5)
-        soup = BeautifulSoup(res.text, "html.parser")
-        paragraphs = soup.find_all("p")
-        text = " ".join(p.get_text() for p in paragraphs[:5])
-        return text[:800]
-    except:
-        return ""
-
-# -------- 뉴스 수집 --------
-def fetch_news():
-    articles = []
-    for feed_url in RSS_FEEDS:
+# -------- 2. 실시간 뉴스 검색 함수 --------
+def fetch_realtime_news():
+    """공신력 있는 매일경제, 동아일보의 실시간 RSS 뉴스를 가져옵니다."""
+    feeds = [
+        "https://www.mk.co.kr/rss/30100041/", # 매일경제 경제
+        "https://rss.donga.com/total.xml"      # 동아일보 전체
+    ]
+    news_results = []
+    for url in feeds:
         try:
-            feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:2]:
-                title = entry.title
-                link = entry.link
-                content = get_article_text(link)
-                articles.append((title, link, content))
-        except:
-            continue
-    return articles[:5]
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:3]: # 각 매체당 최신글 3개씩
+                news_results.append(f"제목: {entry.title}\n요약: {entry.description[:100]}...")
+        except: continue
+    return "\n\n".join(news_results) if news_results else "현재 실시간 뉴스 검색 결과를 가져올 수 없습니다."
 
-# -------- 뉴스 요약 --------
-def summarize(title, content):
-    if not content:
-        return f"📰 {title}\n(본문 요약 불가)"
-    return f"📰 {title}\n요약: {content[:200]}..."
-
-# -------- Claude API로 대화 응답 생성 --------
-def get_ai_response(user_message):
+# -------- 3. 비서의 대답 로직 --------
+def get_ai_response(user_text):
+    current_news = fetch_realtime_news()
+    
     try:
-        message = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+        response = client.messages.create(
+            model="claude-3-haiku-20240307",
             max_tokens=1024,
-            messages=[
-                {
-                    "role": "user",
-                    "content": user_message
-                }
-            ]
+            system=(
+                "당신은 70세 사용자님을 모시는 정중한 '수석 비서'입니다.\n"
+                "사용자님은 재테크(VOO, SCHD), 파이썬, 실리콘 배합에 관심이 많습니다.\n\n"
+                "**필독 규칙:**\n"
+                f"1. 아래 제공되는 [실시간 뉴스 정보]에 근거해서만 시사/경제 답변을 하십시오.\n"
+                "2. 본인이 모르는 주가나 지수를 절대로 추측해서 숫자로 말하지 마십시오.\n"
+                "3. 검색 결과에 없는 내용은 반드시 '실시간 확인이 필요하여 지금은 정확히 알 수 없습니다'라고 정직하게 말하십시오.\n"
+                "4. 항상 정중하고 명확하게 답변하십시오.\n\n"
+                f"[실시간 뉴스 정보]:\n{current_news}"
+            ),
+            messages=[{"role": "user", "content": user_text}]
         )
-        return message.content[0].text
+        return response.content[0].text
     except Exception as e:
-        logging.error(f"Claude API 에러: {e}")
-        return "죄송합니다. 응답을 생성할 수 없습니다."
+        return f"❌ 비서가 응답에 실패했습니다. (원인: {type(e).__name__})"
 
-# -------- /start --------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "안녕하세요! 📡 뉴스 브리핑 + AI 개인비서 봇입니다!\n\n"
-        "사용 가능한 명령어:\n"
-        "/news - 최신 뉴스 조회\n"
-        "/help - 도움말\n\n"
-        "일반 대화도 자유롭게 나눌 수 있습니다! 😊"
-    )
+# -------- 4. 실행 부분 --------
+async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    await u.message.reply_text("수석 비서가 실시간 뉴스 검색 기능을 탑재하고 가동되었습니다. 무엇이든 물어봐 주십시오.")
 
-# -------- /help --------
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📖 도움말\n\n"
-        "이 봇은 다음 기능을 제공합니다:\n\n"
-        "1️⃣ /news - 최신 뉴스 5개 조회\n"
-        "2️⃣ 일반 질문 - AI가 대답해줍니다\n"
-        "   예: '날씨 어때?', '파이썬 배우려면?'\n"
-        "3️⃣ /start - 시작 메시지"
-    )
-
-# -------- /news --------
-async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📰 뉴스 수집 중...")
-    articles = fetch_news()
-    if not articles:
-        await update.message.reply_text("오늘 주요 뉴스를 가져오지 못했습니다.")
-        return
-    for title, link, content in articles:
-        summary = summarize(title, content)
-        await update.message.reply_text(f"{summary}\n🔗 {link}")
-
-# -------- 일반 대화 (개선됨) --------
-async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
-    
-    # 입력 중 표시
-    await update.message.chat.send_action("typing")
-    
-    # AI 응답 생성
-    ai_response = get_ai_response(user_message)
-    
-    # 응답 전송 (길면 여러 메시지로 분할)
-    if len(ai_response) > 4096:
-        for i in range(0, len(ai_response), 4096):
-            await update.message.reply_text(ai_response[i:i+4096])
-    else:
-        await update.message.reply_text(ai_response)
-
-# -------- 오류 처리 --------
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.error(f"Update {update} caused error {context.error}")
-
-# -------- 봇 실행 --------
-def main():
-    if not TELEGRAM_TOKEN:
-        print("❌ 에러: TELEGRAM_TOKEN이 설정되지 않았습니다.")
-        print("다음 명령어로 설정하세요:")
-        print('export TELEGRAM_TOKEN="your_token_here"')
-        return
-    
-    if not CLAUDE_API_KEY:
-        print("❌ 에러: CLAUDE_API_KEY가 설정되지 않았습니다.")
-        print("다음 명령어로 설정하세요:")
-        print('export CLAUDE_API_KEY="your_api_key_here"')
-        return
-    
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    
-    # 핸들러 추가
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("news", news))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    app.add_error_handler(error_handler)
-    
-    print("✅ 봇 시작 중...")
-    app.run_polling()
+async def handle_message(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    await u.message.chat.send_action("typing")
+    reply = get_ai_response(u.message.text)
+    await u.message.reply_text(reply)
 
 if __name__ == "__main__":
-    main()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    print("🚀 실시간 검색 비서가 시작되었습니다.")
+    app.run_polling()
