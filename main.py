@@ -6,7 +6,7 @@ from urllib.parse import quote
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# 1. 파이썬 3.13 호환성 (Mock Class)
+# 1. 파이썬 3.13 호환성 대응 (Mock Class)
 try:
     import cgi
 except ImportError:
@@ -21,18 +21,18 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 반갑습니다! 주인님의 명령을 최우선으로 수행하는 비서 '항아야'입니다.")
+    await update.message.reply_text("👋 반갑습니다! 주인님의 명령을 최우선으로 수행하는 비서 '항아야'입니다. 무엇을 도와드릴까요?")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
 
     try:
-        # [수정] 모델명을 가장 안정적인 버전으로 교체하여 404 에러 방지
-        # 사용자의 의도가 '뉴스 검색'인지 '단순 지시/대화'인지 판단
+        # [핵심] 모델명을 가장 안정적인 버전으로 교체하여 404 에러 원천 차단
+        # 사용자의 의도가 '실시간 뉴스 검색 명령'인지 판단
         decision_prompt = f"""
         사용자의 메시지가 '실시간 뉴스 검색'을 명확히 요청하는 것인지 판단해줘.
-        - 뉴스 검색 요청이면: SEARCH
-        - 그 외 지시, 질문, 대화면: DIRECT
+        - 뉴스 검색/조회 명령이면: SEARCH
+        - 그 외 모든 대화, 질문, 개인적 지시면: DIRECT
         메시지: {user_text}
         """
         
@@ -45,7 +45,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         decision = check_res.content[0].text.strip().upper()
 
         if "SEARCH" in decision:
-            status_msg = await update.message.reply_text(f"🔍 지시하신 '{user_text}' 관련 정보를 찾는 중입니다...")
+            status_msg = await update.message.reply_text(f"🔍 지시하신 '{user_text}' 관련 뉴스를 분석 중입니다...")
             safe_query = quote(user_text)
             rss_url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
             feed = feedparser.parse(rss_url)
@@ -64,16 +64,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text(response.content[0].text)
         
         else:
-            # 뉴스 검색이 아닌 모든 지시/대화 처리
+            # 뉴스 검색이 아닌 모든 사용자 지시 및 대화 처리
             response = client.messages.create(
                 model="claude-3-sonnet-20240229",
                 max_tokens=800,
-                messages=[{"role": "user", "content": f"당신은 70세 투자자의 충성스러운 비서 '항아야'입니다. 주인님의 지시나 말에 정중하고 똑똑하게 답하세요: {user_text}"}]
+                messages=[{"role": "user", "content": f"당신은 70세 투자자의 충성스럽고 유능한 개인 비서 '항아야'입니다. 주인님의 말씀에 정중하고 똑똑하게 답하세요: {user_text}"}]
             )
             await update.message.reply_text(response.content[0].text)
 
     except Exception as e:
-        await update.message.reply_text(f"❌ 비서가 잠시 멈췄습니다. (원인: {str(e)})")
+        await update.message.reply_text(f"❌ 비서 가동 중 오류 발생: {str(e)}")
 
 if __name__ == '__main__':
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
