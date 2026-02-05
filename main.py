@@ -1,3 +1,16 @@
+import sys
+try:
+    import cgi
+except ImportError:
+    import html
+    import http.cookies
+    class MockCgi:
+        escape = html.escape
+        parse = None
+    sys.modules['cgi'] = MockCgi
+
+
+
 import os
 import logging
 import feedparser
